@@ -50,6 +50,17 @@ input:focus-visible,textarea:focus-visible,button:focus-visible,.scene input:foc
 .results button{text-align:left;display:flex;flex-direction:column;gap:2px}
 .results small{color:var(--muted);font-weight:400}
 .micbtn[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+.ytfield{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:8px}
+.ytfield input{background:var(--ink)}
+.divider{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:11px;letter-spacing:.12em;text-transform:uppercase}
+.divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--line)}
+.ytbox{position:absolute;top:calc(env(safe-area-inset-top,0px) + 12px);right:max(12px,env(safe-area-inset-right,0px));width:200px;height:200px;border-radius:10px;overflow:hidden;background:#000;box-shadow:0 0 0 1px rgba(255,255,255,.15),0 10px 30px rgba(0,0,0,.6);z-index:3}
+.ytbox iframe,.ytbox>div{width:100%;height:100%;display:block;border:0}
+.ytstatus{position:absolute;top:calc(env(safe-area-inset-top,0px) + 16px);left:max(16px,env(safe-area-inset-left,0px));right:calc(max(12px,env(safe-area-inset-right,0px)) + 214px);font-size:11px;line-height:1.4;letter-spacing:.08em;text-transform:uppercase;color:#fff;opacity:.75;pointer-events:none;overflow-wrap:anywhere}
+.gate{z-index:2}
+.hud{z-index:4}
+#stage.yt .lyricwrap,#stage.yt .titlecard{padding-top:calc(env(safe-area-inset-top,0px) + 226px)}
+@media (orientation:landscape){#stage.yt .lyricwrap,#stage.yt .titlecard{padding-top:calc(env(safe-area-inset-top,0px) + 24px);padding-right:calc(max(20px,env(safe-area-inset-right,0px)) + 220px)}}
 .bpm{display:flex;gap:8px}
 .bpm input{width:90px;flex:none}
 button{font:inherit;cursor:pointer;border:0}
@@ -101,6 +112,15 @@ button{font:inherit;cursor:pointer;border:0}
     <div class="pv"><div class="pv-title" id="pvTitle"></div><div class="pv-artist" id="pvArtist"></div></div>
     <div class="badge" id="exampleBadge">Example song</div>
   </div>
+
+  <div class="ytfield">
+    <label for="ytLink">YouTube Music link</label>
+    <input id="ytLink" inputmode="url" autocomplete="off" placeholder="Paste a song or playlist link">
+    <p class="mode" id="ytMode" hidden></p>
+    <p class="hint">In YouTube Music, tap Share, then Copy link, on a song or playlist and paste it here. Stagelight plays it, works out each song and syncs the lyrics by itself.</p>
+  </div>
+
+  <div class="divider">or set up a song yourself</div>
 
   <div class="row">
     <div class="field"><label for="songTitle">Song title</label><input id="songTitle" autocomplete="off"></div>
@@ -155,12 +175,15 @@ button{font:inherit;cursor:pointer;border:0}
 
 <section id="stage" hidden>
   <canvas id="stageCanvas" aria-hidden="true"></canvas>
+  <div class="ytbox" id="ytBox" hidden><div id="ytPlayer"></div></div>
+  <div class="ytstatus" id="ytStatus" hidden></div>
   <div class="titlecard" id="titleCard"><div class="tc-title" id="tcTitle"></div><div class="tc-rule"></div><div class="tc-artist" id="tcArtist"></div></div>
   <div class="lyricwrap"><div class="lyric" id="lyric" aria-live="polite"></div><div class="next" id="nextLine"></div></div>
   <div class="taphint" id="tapHint" hidden>Tap the screen as each line starts</div>
   <div class="hud" id="hud">
     <button id="exitBtn" type="button">Exit</button>
     <button id="restartBtn" type="button">Restart</button>
+    <button id="nextBtn" type="button" hidden>Next song</button>
     <button id="hudMic" type="button">Mic off</button>
     <button id="hudTap" type="button">Tap beat · <span class="bpmread" id="hudBpm">120</span></button>
     <button id="syncMinus" type="button">Lyrics −0.5s</button>
@@ -168,7 +191,7 @@ button{font:inherit;cursor:pointer;border:0}
     <button id="sceneBtn" type="button">Scene</button>
   </div>
   <div class="gate" id="gate">
-    <ol>
+    <ol id="gateSteps">
       <li>Open YouTube Music and play your song.</li>
       <li>Come back and tap GO right as the song begins.</li>
     </ol>
@@ -423,20 +446,32 @@ function parse(text){
 const preview=new Renderer($('previewCanvas'));
 function syncForm(){
   $('songTitle').value=st.title;$('songArtist').value=st.artist;$('lyricsInput').value=st.lyrics;
-  $('bpmInput').value=st.bpm;$('sc-'+st.scene).checked=true;beat.bpm=st.bpm;refresh(true)}
+  $('bpmInput').value=st.bpm;$('sc-'+st.scene).checked=true;beat.bpm=st.bpm;$('ytLink').value=st.yt||'';refresh(true)}
+function parseYt(url){url=(url||'').trim();if(!url)return null;let u;
+  try{u=new URL(/^https?:\/\//i.test(url)?url:'https://'+url)}catch(e){return null}
+  const host=u.hostname.replace(/^(www|m)\./,'');let v=null,list=u.searchParams.get('list');
+  if(host==='youtu.be')v=u.pathname.slice(1).split('/')[0];
+  else if(/(^|\.)youtube\.com$/.test(host)){v=u.searchParams.get('v');if(!v){const m=u.pathname.match(/^\/(?:shorts|embed|live)\/([\w-]{11})/);if(m)v=m[1]}}
+  else return null;
+  if(v&&!/^[\w-]{11}$/.test(v))v=null;
+  if(v&&list&&/^RD/.test(list))list=null; // auto-made radio mixes can't be embedded
+  return v||list?{v,list}:null}
+function ytModeText(){const m=$('ytMode');if(!st.yt){m.hidden=true;return}m.hidden=false;const l=parseYt(st.yt);
+  m.textContent=!l?'That doesn’t look like a YouTube Music link. Copy it again from Share.':l.list?'Playlist ready. Stagelight follows every song in it.':'Song ready. Stagelight finds the lyrics and timing by itself.'}
+$('ytLink').addEventListener('input',e=>{st.yt=e.target.value.trim();ytModeText();save()});
 function refresh(sceneChanged){
   $('pvTitle').textContent=st.title||'Your song';$('pvArtist').textContent=st.artist||'';
   $('preview').style.setProperty('--glow',SCENES[st.scene].glow);
   $('exampleBadge').hidden=st.lyrics!==EXAMPLE.lyrics;
   const p=parse(st.lyrics);
   $('modeLine').textContent=!p.lines.length?'Paste some lyrics to begin.':p.timed?`Timed lyrics found: ${p.lines.length} lines will play automatically.`:`${p.lines.length} plain lines: tap the screen as each one starts.`;
-  if(sceneChanged)preview.setScene(st.scene);save()}
+  ytModeText();if(sceneChanged)preview.setScene(st.scene);save()}
 $('songTitle').addEventListener('input',e=>{st.title=e.target.value;refresh()});
 $('songArtist').addEventListener('input',e=>{st.artist=e.target.value;refresh()});
 $('lyricsInput').addEventListener('input',e=>{st.lyrics=e.target.value;refresh()});
 $('bpmInput').addEventListener('change',e=>{const v=Math.round(+e.target.value);if(v>=50&&v<=220){st.bpm=v;beat.bpm=v;beat.anchor=performance.now()}else e.target.value=st.bpm;save()});
 document.querySelectorAll('input[name=scene]').forEach(r=>r.addEventListener('change',e=>{st.scene=e.target.value;refresh(true)}));
-$('exampleBtn').addEventListener('click',()=>{st={...EXAMPLE};syncForm()});
+$('exampleBtn').addEventListener('click',()=>{st={...EXAMPLE,yt:''};syncForm()});
 $('clearBtn').addEventListener('click',()=>{st.lyrics='';st.title='';st.artist='';syncForm();$('songTitle').focus()});
 
 const taps=[];
@@ -498,8 +533,8 @@ stage.onFrame=(p,now)=>{
   stageEl.style.setProperty('--p',p.toFixed(3));
   if(mic.on&&mic.bpm&&show&&show.shownBpm!==mic.bpm){show.shownBpm=mic.bpm;$('hudBpm').textContent=mic.bpm}
   if(!show||show.phase==='gate')return;
-  const el=(now-show.t0)/1000+show.offset;
-  if(show.phase==='title'&&(now-show.t0)/1000>show.titleDur)endTitle();
+  const el=show.yt?ytTime()+show.offset:(now-show.t0)/1000+show.offset;
+  if(show.phase==='title'&&(show.yt?now>show.titleUntil:(now-show.t0)/1000>show.titleDur))endTitle();
   if(show.parsed.timed&&show.phase==='lyrics'){const L=show.parsed.lines;let i=-1;
     for(let k=0;k<L.length;k++){if(L[k].t<=el)i=k;else break}
     if(i!==show.idx){show.idx=i;if(i>=0)renderLine(i);else{$('lyric').textContent='';$('nextLine').textContent=L[0]?L[0].text:''}}}
@@ -510,28 +545,91 @@ function advance(){if(!show||show.phase==='gate'||show.parsed.timed)return;
   $('tapHint').hidden=true}
 stageEl.addEventListener('pointerdown',e=>{if(e.target.closest('button'))return;advance()});
 
+/* ---------- YouTube player mode ---------- */
+let player=null,ytApi=null;const ytT={raw:-1,at:0};
+function setYtStatus(t){$('ytStatus').textContent=t}
+function loadYtApi(){if(ytApi)return ytApi;
+  ytApi=new Promise((res,rej)=>{if(window.YT&&window.YT.Player)return res();
+    const prev=window.onYouTubeIframeAPIReady;window.onYouTubeIframeAPIReady=()=>{prev&&prev();res()};
+    const s=document.createElement('script');s.src='https://www.youtube.com/iframe_api';s.onerror=()=>{ytApi=null;rej(new Error('blocked'))};document.head.appendChild(s);
+    setTimeout(()=>{if(!(window.YT&&window.YT.Player)){ytApi=null;rej(new Error('timeout'))}},12000)});
+  return ytApi}
+function ytTime(){if(!player||!player.getCurrentTime)return 0;const t=player.getCurrentTime()||0,now=performance.now();
+  if(t!==ytT.raw){ytT.raw=t;ytT.at=now;return t}
+  return player.getPlayerState&&player.getPlayerState()===1?t+(now-ytT.at)/1000:t}
+function cleanMeta(title,author){const topic=/\s-\sTopic$/i.test(author);let artist=author.replace(/\s-\sTopic$/i,'').replace(/VEVO$/i,'').trim(),t=title;
+  t=t.replace(/\s*[\(\[][^\)\]]*(official|video|audio|lyric|visuali[sz]er|remaster|hd|4k|mv|explicit)[^\)\]]*[\)\]]/gi,'').replace(/\s*\|.*$/,'').trim();
+  if(!topic&&t.includes(' - ')){const parts=t.split(' - ');artist=parts.shift().trim();t=parts.join(' - ').trim()}
+  return{title:t||title,artist}}
+async function findLyrics(title,artist,dur){
+  const q=async params=>{const r=await fetch('https://lrclib.net/api/search?'+new URLSearchParams(params));return r.ok?await r.json():[]};
+  try{let data=await q(artist?{track_name:title,artist_name:artist}:{q:title});
+    if(!data.length)data=await q({q:(title+' '+artist).trim()});
+    data=data.filter(d=>d.syncedLyrics||d.plainLyrics);if(!data.length)return null;
+    const synced=data.filter(d=>d.syncedLyrics),pool=synced.length?synced:data;
+    if(dur)pool.sort((a,b)=>Math.abs((a.duration||0)-dur)-Math.abs((b.duration||0)-dur));
+    const d=pool[0];return{text:d.syncedLyrics||d.plainLyrics,artist:d.artistName,track:d.trackName}}catch(e){return null}}
+async function checkSong(){
+  const d=player&&player.getVideoData&&player.getVideoData();if(!show||!d||!d.video_id||d.video_id===show.vid)return;
+  show.vid=d.video_id;const vid=show.vid,meta=cleanMeta(d.title||'',d.author||'');
+  show.parsed={timed:false,lines:[]};show.idx=-1;$('lyric').textContent='';$('nextLine').textContent='';$('tapHint').hidden=true;
+  $('tcTitle').textContent=meta.title;$('tcArtist').textContent=meta.artist;
+  show.phase='title';show.titleUntil=performance.now()+6000;const tc=$('titleCard');tc.classList.remove('on');void tc.offsetWidth;tc.classList.add('on');
+  setYtStatus('Finding lyrics…');
+  const found=await findLyrics(meta.title,meta.artist,player.getDuration?player.getDuration():0);
+  if(!show||show.vid!==vid)return;
+  if(!found){setYtStatus('No lyrics found for this song. Enjoy the visuals.');return}
+  show.parsed=parse(found.text);show.idx=-1;
+  if(show.parsed.timed&&show.parsed.lines.length){const wait=show.parsed.lines[0].t-ytTime()-.4;show.titleUntil=Math.min(show.titleUntil,performance.now()+Math.max(0,wait)*1000)}
+  $('syncMinus').hidden=$('syncPlus').hidden=!show.parsed.timed;$('tapHint').hidden=show.parsed.timed;
+  setYtStatus(show.parsed.timed?`Synced lyrics · ${found.track} · ${found.artist}`:'Plain lyrics found. Tap the screen as each line starts.')}
+async function startYt(link){
+  setYtStatus('Loading YouTube…');
+  try{await loadYtApi()}catch(e){setYtStatus('YouTube can’t load here. Open Stagelight from its web link.');return}
+  if(!show)return;
+  if(player){try{player.destroy()}catch(e){}player=null}
+  $('ytBox').innerHTML='<div id="ytPlayer"></div>';
+  const vars={playsinline:1,rel:0,controls:1};if(link.list){vars.listType='playlist';vars.list=link.list}
+  const opts={width:'100%',height:'100%',playerVars:vars,events:{
+    onReady:()=>{if(show)setYtStatus('Ready. Tap GO to start the music.')},
+    onStateChange:e=>{if(!show)return;if(e.data===1){$('gate').hidden=true;checkSong()}},
+    onError:e=>{if(!show)return;const blocked=e.data===101||e.data===150;
+      setYtStatus(blocked?'This version can’t play outside YouTube.'+(link.list?' Skipping…':' Try the song’s “Topic” version.'):'This video can’t play. Try another link.');
+      if(blocked&&link.list)setTimeout(()=>{try{player.nextVideo()}catch(_){}} ,2000)}}};
+  if(link.v)opts.videoId=link.v;
+  player=new YT.Player('ytPlayer',opts)}
+
 async function openStage(){
-  const parsed=parse(st.lyrics);
-  if(!parsed.lines.length){$('lyricsInput').focus();$('modeLine').textContent='Paste some lyrics first, then start the show.';return}
-  show={parsed,offset:0,phase:'gate',idx:-1};
-  $('tcTitle').textContent=st.title||'Untitled';$('tcArtist').textContent=st.artist||'';
+  const link=parseYt(st.yt);let parsed={timed:false,lines:[]};
+  if(st.yt&&!link){$('ytLink').focus();return}
+  if(!link){parsed=parse(st.lyrics);if(!parsed.lines.length){$('lyricsInput').focus();$('modeLine').textContent='Paste some lyrics first, then start the show.';return}}
+  show={parsed,offset:0,phase:'gate',idx:-1,yt:!!link,vid:null};
+  $('tcTitle').textContent=link?'':(st.title||'Untitled');$('tcArtist').textContent=link?'':(st.artist||'');
   $('titleCard').classList.remove('on');$('lyric').textContent='';$('nextLine').textContent='';$('tapHint').hidden=true;
   $('syncMinus').hidden=$('syncPlus').hidden=!parsed.timed;$('hudBpm').textContent=st.bpm;
+  stageEl.classList.toggle('yt',!!link);$('ytBox').hidden=!link;$('ytStatus').hidden=!link;$('nextBtn').hidden=!(link&&link.list);
+  $('gateSteps').innerHTML=link?'<li>Tap GO to start the music.</li><li>If nothing plays, tap play on the video.</li>':'<li>Open YouTube Music and play your song.</li><li>Come back and tap GO right as the song begins.</li>';
   stageEl.style.setProperty('--glow',SCENES[st.scene].glow);
   preview.stop();stageEl.hidden=false;$('gate').hidden=false;stage.setScene(st.scene);stage.start();
+  if(link)startYt(link);
   try{const r=document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen();r&&r.catch&&r.catch(()=>{})}catch(e){}
   try{if(navigator.wakeLock)wake=await navigator.wakeLock.request('screen')}catch(e){wake=null}
   $('goBtn').focus()}
 function closeStage(){
   stage.stop();stageEl.hidden=true;show=null;
+  if(player){try{player.stopVideo();player.destroy()}catch(e){}player=null;$('ytBox').innerHTML='<div id="ytPlayer"></div>'}
+  stageEl.classList.remove('yt');$('ytBox').hidden=true;$('ytStatus').hidden=true;
   try{if(document.fullscreenElement)document.exitFullscreen().catch(()=>{})}catch(e){}
   try{wake&&wake.release()}catch(e){}wake=null;preview.resize();preview.start()}
 
 $('startBtn').addEventListener('click',openStage);
-$('goBtn').addEventListener('click',()=>{$('gate').hidden=true;startClock()});
+$('goBtn').addEventListener('click',()=>{if(show&&show.yt){try{player&&player.playVideo()}catch(e){}return}$('gate').hidden=true;startClock()});
 $('gateBack').addEventListener('click',closeStage);
 $('exitBtn').addEventListener('click',closeStage);
-$('restartBtn').addEventListener('click',()=>{if(show){$('gate').hidden=false;show.phase='gate';$('titleCard').classList.remove('on');$('lyric').textContent='';$('nextLine').textContent=''}});
+$('nextBtn').addEventListener('click',()=>{try{player&&player.nextVideo()}catch(e){}});
+$('restartBtn').addEventListener('click',()=>{if(!show)return;
+  if(show.yt){try{player.seekTo(0,true);player.playVideo()}catch(e){}show.idx=-1;return}
+  $('gate').hidden=false;show.phase='gate';$('titleCard').classList.remove('on');$('lyric').textContent='';$('nextLine').textContent=''});
 $('hudTap').addEventListener('click',tapTempo);
 $('syncMinus').addEventListener('click',()=>{if(show)show.offset-=.5});
 $('syncPlus').addEventListener('click',()=>{if(show)show.offset+=.5});
